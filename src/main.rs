@@ -1,4 +1,5 @@
 use ::ghost_cell::*;
+use bumpalo::Bump;
 
 #[derive(Clone, Copy)]
 struct PortRef<'graph, 'brand> {
@@ -11,9 +12,14 @@ impl<'graph, 'brand> PortRef<'graph, 'brand> {
     Self { index, node }
   }
 
-  fn connect(self, other: Self, token: &mut GhostToken<'brand>) {
-    self.node.borrow_mut(token).connected_to[self.index].replace(other);
-    other.node.borrow_mut(token).connected_to[other.index].replace(self);
+  fn connect(token: &mut GhostToken<'brand>, lhs: Option<Self>, rhs: Option<Self>) {
+    if let Some(lhs) = lhs {
+      lhs.node.borrow_mut(token).connected_to[lhs.index] = rhs;
+    }
+
+    if let Some(rhs) = rhs {
+      rhs.node.borrow_mut(token).connected_to[rhs.index] = lhs;
+    }
   }
 }
 
@@ -53,6 +59,145 @@ impl<'a, 'b> Agent<'a, 'b> {
   }
 }
 
+fn reduce_local<'graph, 'brand>(
+  permission: &mut GhostToken<'brand>,
+  lhs: &'graph GhostCell<'brand, Agent<'graph, 'brand>>,
+  rhs: &'graph GhostCell<'brand, Agent<'graph, 'brand>>,
+) {
+  assert_eq!(
+    lhs.borrow(permission).connected_to[0]
+      .expect("This function expects a pair of reducible agents.")
+      .node
+      .as_ptr(),
+    rhs.as_ptr()
+  );
+  assert_eq!(
+    lhs.borrow(permission).connected_to[0]
+      .expect("This function expects a pair of reducible agents.")
+      .index,
+    0
+  );
+  assert_eq!(
+    rhs.borrow(permission).connected_to[0]
+      .expect("This function expects a pair of reducible agents.")
+      .node
+      .as_ptr(),
+    lhs.as_ptr()
+  );
+  assert_eq!(
+    rhs.borrow(permission).connected_to[0]
+      .expect("This function expects a pair of reducible agents.")
+      .index,
+    0
+  );
+
+  match (
+    lhs.borrow(permission).agent_type,
+    rhs.borrow(permission).agent_type,
+  ) {
+    (AgentType::Constructor, AgentType::Constructor) => {
+      annihilate(permission, lhs, rhs);
+    }
+    (AgentType::Duplicator, AgentType::Duplicator) => {
+      swap(permission, lhs, rhs);
+    }
+    (AgentType::Constructor, AgentType::Duplicator)
+    | (AgentType::Duplicator, AgentType::Constructor) => {
+      duplicate(permission, lhs, rhs);
+    }
+    (AgentType::Eraser, AgentType::Constructor) | (AgentType::Eraser, AgentType::Duplicator) => {
+      erase(permission, lhs, rhs);
+    }
+    (AgentType::Constructor, AgentType::Eraser) | (AgentType::Duplicator, AgentType::Eraser) => {
+      erase(permission, rhs, lhs);
+    }
+  }
+}
+
+fn annihilate<'graph, 'brand>(
+  permission: &mut GhostToken<'brand>,
+  lhs: &'graph GhostCell<'brand, Agent<'graph, 'brand>>,
+  rhs: &'graph GhostCell<'brand, Agent<'graph, 'brand>>,
+) {
+  let port_a = lhs.borrow(permission).connected_to[1];
+  let port_b = lhs.borrow(permission).connected_to[2];
+  let port_c = rhs.borrow(permission).connected_to[1];
+  let port_d = rhs.borrow(permission).connected_to[2];
+  PortRef::connect(permission, port_a, port_c);
+  PortRef::connect(permission, port_b, port_d);
+}
+
+fn swap<'graph, 'brand>(
+  permission: &mut GhostToken<'brand>,
+  lhs: &'graph GhostCell<'brand, Agent<'graph, 'brand>>,
+  rhs: &'graph GhostCell<'brand, Agent<'graph, 'brand>>,
+) {
+  let port_a = lhs.borrow(permission).connected_to[1];
+  let port_b = lhs.borrow(permission).connected_to[2];
+  let port_c = rhs.borrow(permission).connected_to[1];
+  let port_d = rhs.borrow(permission).connected_to[2];
+  PortRef::connect(permission, port_a, port_d);
+  PortRef::connect(permission, port_b, port_c);
+}
+
+fn duplicate<'graph, 'brand>(
+  allocator: &mut Bump,
+  permission: &mut GhostToken<'brand>,
+  top_right: &'graph GhostCell<'brand, Agent<'graph, 'brand>>,
+  bottom_left: &'graph GhostCell<'brand, Agent<'graph, 'brand>>,
+) {
+  let bottom_right = allocator.alloc(top_right.clone());
+  let top_left = allocator.alloc(top_right.clone());
+
+  let port5 = top_left.borrow(permission).connected_to[0];
+  let port6 = bottom_left.borrow(permission).connected_to[2];
+  PortRef::connect(permission, port5, port6);
+
+  let port7 = bottom_right.borrow(permission).connected_to[0];
+  let port8 = top_right.borrow(permission).connected_to[2];
+  PortRef::connect(permission, port7, port8);
+
+  let port1 = top_right.borrow(permission).connected_to[0];
+  let port2 = bottom_left.borrow(permission).connected_to[1];
+  PortRef::connect(permission, port1, port2);
+
+  let port3 = bottom_left.borrow(permission).connected_to[0];
+  let port4 = top_right.borrow(permission).connected_to[1];
+  PortRef::connect(permission, port3, port4);
+
+  let port9 = Some(PortRef::new(top_left, 1));
+  let port10 = Some(PortRef::new(bottom_left, 2));
+  PortRef::connect(permission, port9, port10);
+
+  let port15 = Some(PortRef::new(top_right, 2));
+  let port16 = Some(PortRef::new(bottom_right, 1));
+  PortRef::connect(permission, port15, port16);
+
+  let port11 = Some(PortRef::new(top_left, 2));
+  let port12 = Some(PortRef::new(bottom_right, 2));
+  PortRef::connect(permission, port11, port12);
+
+  let port13 = Some(PortRef::new(top_right, 1));
+  let port14 = Some(PortRef::new(bottom_left, 1));
+  PortRef::connect(permission, port13, port14);
+}
+
+fn erase<'graph, 'brand>(
+  allocator: &mut Bump,
+  permission: &mut GhostToken<'brand>,
+  eraser: &'graph GhostCell<'brand, Agent<'graph, 'brand>>,
+  to_be_erased: &'graph GhostCell<'brand, Agent<'graph, 'brand>>,
+) {
+  let another_eraser = allocator.alloc(eraser.clone());
+  let another_eraser_principal = Some(PortRef::new(another_eraser, 0));
+  let port1 = to_be_erased.borrow(permission).connected_to[1];
+  PortRef::connect(permission, another_eraser_principal, port1);
+
+  let eraser_principal = Some(PortRef::new(eraser, 0));
+  let port2 = to_be_erased.borrow(permission).connected_to[2];
+  PortRef::connect(permission, eraser_principal, port2);
+}
+
 fn main() {
   println!("Hello, world!");
 }
@@ -68,8 +213,21 @@ mod tests {
       let root = GhostCell::new(Agent::constructor());
       let body = GhostCell::new(Agent::constructor());
 
-      PortRef::new(&root, 1).connect(PortRef::new(&eraser, 0), &mut token);
-      PortRef::new(&root, 2).connect(PortRef::new(&body, 0), &mut token);
+      PortRef::connect(
+        &mut token,
+        Some(PortRef::new(&root, 1)),
+        Some(PortRef::new(&eraser, 0)),
+      );
+      PortRef::connect(
+        &mut token,
+        Some(PortRef::new(&root, 2)),
+        Some(PortRef::new(&body, 0)),
+      );
+      PortRef::connect(
+        &mut token,
+        Some(PortRef::new(&body, 1)),
+        Some(PortRef::new(&body, 2)),
+      );
 
       assert_eq!(
         root.borrow(&token).connected_to[1].unwrap().node.as_ptr(),
@@ -86,12 +244,23 @@ mod tests {
         root.borrow(&token).connected_to[2].unwrap().node.as_ptr(),
         body.as_ptr()
       );
-      assert_eq!(root.borrow(&token).connected_to[1].unwrap().index, 0);
+      assert_eq!(root.borrow(&token).connected_to[2].unwrap().index, 0);
       assert_eq!(
         body.borrow(&token).connected_to[0].unwrap().node.as_ptr(),
         root.as_ptr()
       );
       assert_eq!(body.borrow(&token).connected_to[0].unwrap().index, 2);
+
+      assert_eq!(
+        body.borrow(&token).connected_to[1].unwrap().node.as_ptr(),
+        body.as_ptr()
+      );
+      assert_eq!(body.borrow(&token).connected_to[1].unwrap().index, 2);
+      assert_eq!(
+        body.borrow(&token).connected_to[2].unwrap().node.as_ptr(),
+        body.as_ptr()
+      );
+      assert_eq!(body.borrow(&token).connected_to[2].unwrap().index, 1);
     });
   }
 }

@@ -5,3 +5,4 @@ edition = "2024"
 
 [dependencies]
 ghost-cell = "0.2.6"
+bumpalo = "3.17.0"
