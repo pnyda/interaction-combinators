@@ -1,5 +1,3 @@
-use std::{marker::PhantomData, ops::Index};
-
 use ::ghost_cell::*;
 
 #[derive(Clone, Copy)]
@@ -13,7 +11,7 @@ impl<'graph, 'brand> PortRef<'graph, 'brand> {
     Self { index, node }
   }
 
-  fn connect<'a>(self, other: Self, token: &'a mut GhostToken<'brand>) {
+  fn connect(self, other: Self, token: &mut GhostToken<'brand>) {
     self.node.borrow_mut(token).connected_to[self.index].replace(other);
     other.node.borrow_mut(token).connected_to[other.index].replace(self);
   }
@@ -63,30 +61,38 @@ fn main() {
 mod tests {
   use super::*;
   use ::ghost_cell::*;
-  use bumpalo::Bump;
 
   #[test]
   fn zero() {
     GhostToken::new(|mut token| {
-      let allocator = Bump::new();
-      let eraser = allocator.alloc(GhostCell::new(Agent::eraser()));
-      let root = allocator.alloc(GhostCell::new(Agent::constructor()));
-      let body = allocator.alloc(GhostCell::new(Agent::constructor()));
-      PortRef::new(root, 1).connect(PortRef::new(eraser, 0), &mut token);
-      PortRef::new(root, 2).connect(PortRef::new(body, 0), &mut token);
-
-      // assert!(eraser.borrow(&token).connected_to[0].unwrap().node.as_ptr() == root.as_ptr());
-      // assert!(eraser.borrow(&token).connected_to[0].unwrap().index == 1);
-    });
-  }
-
-  #[test]
-  fn zero2() {
-    GhostToken::new(|mut token| {
       let eraser = GhostCell::new(Agent::eraser());
       let root = GhostCell::new(Agent::constructor());
       let body = GhostCell::new(Agent::constructor());
+
       PortRef::new(&root, 1).connect(PortRef::new(&eraser, 0), &mut token);
+      PortRef::new(&root, 2).connect(PortRef::new(&body, 0), &mut token);
+
+      assert_eq!(
+        root.borrow(&token).connected_to[1].unwrap().node.as_ptr(),
+        eraser.as_ptr()
+      );
+      assert_eq!(root.borrow(&token).connected_to[1].unwrap().index, 0);
+      assert_eq!(
+        eraser.borrow(&token).connected_to[0].unwrap().node.as_ptr(),
+        root.as_ptr()
+      );
+      assert_eq!(eraser.borrow(&token).connected_to[0].unwrap().index, 1);
+
+      assert_eq!(
+        root.borrow(&token).connected_to[2].unwrap().node.as_ptr(),
+        body.as_ptr()
+      );
+      assert_eq!(root.borrow(&token).connected_to[1].unwrap().index, 0);
+      assert_eq!(
+        body.borrow(&token).connected_to[0].unwrap().node.as_ptr(),
+        root.as_ptr()
+      );
+      assert_eq!(body.borrow(&token).connected_to[0].unwrap().index, 2);
     });
   }
 }
