@@ -13,7 +13,7 @@ impl<'graph, 'brand> PortRef<'graph, 'brand> {
     Self { index, node }
   }
 
-  fn connect(self, other: Self, token: &'graph mut GhostToken<'brand>) {
+  fn connect<'a>(self, other: Self, token: &'a mut GhostToken<'brand>) {
     self.node.borrow_mut(token).connected_to[self.index].replace(other);
     other.node.borrow_mut(token).connected_to[other.index].replace(self);
   }
@@ -73,6 +73,20 @@ mod tests {
       let root = allocator.alloc(GhostCell::new(Agent::constructor()));
       let body = allocator.alloc(GhostCell::new(Agent::constructor()));
       PortRef::new(root, 1).connect(PortRef::new(eraser, 0), &mut token);
+      PortRef::new(root, 2).connect(PortRef::new(body, 0), &mut token);
+
+      // assert!(eraser.borrow(&token).connected_to[0].unwrap().node.as_ptr() == root.as_ptr());
+      // assert!(eraser.borrow(&token).connected_to[0].unwrap().index == 1);
+    });
+  }
+
+  #[test]
+  fn zero2() {
+    GhostToken::new(|mut token| {
+      let eraser = GhostCell::new(Agent::eraser());
+      let root = GhostCell::new(Agent::constructor());
+      let body = GhostCell::new(Agent::constructor());
+      PortRef::new(&root, 1).connect(PortRef::new(&eraser, 0), &mut token);
     });
   }
 }
