@@ -60,7 +60,6 @@ fn main() {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use ::ghost_cell::*;
 
   #[test]
   fn zero() {
