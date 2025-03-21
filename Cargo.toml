@@ -4,3 +4,5 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+bumpalo = "3.17.0"
+ghost-cell = "0.2.6"
