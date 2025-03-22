@@ -1,3 +1,6 @@
+#![allow(dead_code)]
+use std::collections::HashSet;
+
 use ::ghost_cell::*;
 use bumpalo::Bump;
 
@@ -31,27 +34,27 @@ enum AgentType {
 }
 
 #[derive(Clone)]
-struct Agent<'a, 'b> {
+struct Agent<'graph, 'brand> {
   agent_type: AgentType,
-  connected_to: [Option<PortRef<'a, 'b>>; 3],
+  connected_to: [Option<PortRef<'graph, 'brand>>; 3],
 }
 
-impl<'a, 'b> Agent<'a, 'b> {
-  fn constructor() -> Agent<'a, 'b> {
+impl<'graph, 'brand> Agent<'graph, 'brand> {
+  fn constructor() -> Agent<'graph, 'brand> {
     Self {
       agent_type: AgentType::Constructor,
       connected_to: [None; 3],
     }
   }
 
-  fn duplicator() -> Agent<'a, 'b> {
+  fn duplicator() -> Agent<'graph, 'brand> {
     Self {
       agent_type: AgentType::Duplicator,
       connected_to: [None; 3],
     }
   }
 
-  fn eraser() -> Agent<'a, 'b> {
+  fn eraser() -> Agent<'graph, 'brand> {
     Self {
       agent_type: AgentType::Eraser,
       connected_to: [None; 3],
@@ -60,6 +63,7 @@ impl<'a, 'b> Agent<'a, 'b> {
 }
 
 fn reduce_local<'graph, 'brand>(
+  allocator: &'graph mut Bump,
   permission: &mut GhostToken<'brand>,
   lhs: &'graph GhostCell<'brand, Agent<'graph, 'brand>>,
   rhs: &'graph GhostCell<'brand, Agent<'graph, 'brand>>,
@@ -103,14 +107,67 @@ fn reduce_local<'graph, 'brand>(
     }
     (AgentType::Constructor, AgentType::Duplicator)
     | (AgentType::Duplicator, AgentType::Constructor) => {
-      duplicate(permission, lhs, rhs);
+      duplicate(allocator, permission, lhs, rhs);
     }
     (AgentType::Eraser, AgentType::Constructor) | (AgentType::Eraser, AgentType::Duplicator) => {
-      erase(permission, lhs, rhs);
+      erase(allocator, permission, lhs, rhs);
     }
     (AgentType::Constructor, AgentType::Eraser) | (AgentType::Duplicator, AgentType::Eraser) => {
-      erase(permission, rhs, lhs);
+      erase(allocator, permission, rhs, lhs);
     }
+    (AgentType::Eraser, AgentType::Eraser) => {}
+  }
+}
+
+fn list_nodes<'graph, 'brand>(
+  permission: &mut GhostToken<'brand>,
+  known_nodes: &mut Vec<&'graph GhostCell<'brand, Agent<'graph, 'brand>>>,
+) {
+  let root = known_nodes
+    .last()
+    .expect("list_nodes expects Vec with len > 0");
+  let nodes_to_visit: Vec<&'graph GhostCell<'brand, Agent<'graph, 'brand>>> = root
+    .borrow(permission)
+    .connected_to
+    .iter()
+    .filter_map(|port| *port)
+    .map(|port| port.node)
+    .filter(|node| {
+      known_nodes
+        .iter()
+        .find(|x| node as *const _ == *x as *const _)
+        .is_none()
+    })
+    .collect();
+
+  for node in nodes_to_visit {
+    known_nodes.push(node);
+    list_nodes(permission, known_nodes);
+  }
+}
+
+fn reduce_global<'graph, 'brand>(
+  allocator: &mut Bump,
+  permission: &mut GhostToken<'brand>,
+  root: &'graph GhostCell<'brand, Agent<'graph, 'brand>>,
+) {
+  let mut nodes = vec![root];
+  list_nodes(permission, &mut nodes);
+  nodes.retain(|node| {
+    if let Some(principal_port) = node.borrow(permission).connected_to[0] {
+      principal_port.index == 0 && principal_port.node as *const _ != *node as *const _
+    } else {
+      false
+    }
+  });
+
+  for node in nodes.iter() {
+    reduce_local(
+      allocator,
+      permission,
+      node,
+      node.borrow(permission).connected_to[0].unwrap().node,
+    )
   }
 }
 
@@ -141,13 +198,13 @@ fn swap<'graph, 'brand>(
 }
 
 fn duplicate<'graph, 'brand>(
-  allocator: &mut Bump,
+  allocator: &'graph mut Bump,
   permission: &mut GhostToken<'brand>,
   top_right: &'graph GhostCell<'brand, Agent<'graph, 'brand>>,
   bottom_left: &'graph GhostCell<'brand, Agent<'graph, 'brand>>,
 ) {
-  let bottom_right = allocator.alloc(top_right.clone());
-  let top_left = allocator.alloc(top_right.clone());
+  let bottom_right = allocator.alloc(GhostCell::new(top_right.borrow(permission).clone()));
+  let top_left = allocator.alloc(GhostCell::new(top_right.borrow(permission).clone()));
 
   let port5 = top_left.borrow(permission).connected_to[0];
   let port6 = bottom_left.borrow(permission).connected_to[2];
@@ -183,12 +240,12 @@ fn duplicate<'graph, 'brand>(
 }
 
 fn erase<'graph, 'brand>(
-  allocator: &mut Bump,
+  allocator: &'graph mut Bump,
   permission: &mut GhostToken<'brand>,
   eraser: &'graph GhostCell<'brand, Agent<'graph, 'brand>>,
   to_be_erased: &'graph GhostCell<'brand, Agent<'graph, 'brand>>,
 ) {
-  let another_eraser = allocator.alloc(eraser.clone());
+  let another_eraser = allocator.alloc(GhostCell::new(eraser.borrow(permission).clone()));
   let another_eraser_principal = Some(PortRef::new(another_eraser, 0));
   let port1 = to_be_erased.borrow(permission).connected_to[1];
   PortRef::connect(permission, another_eraser_principal, port1);
