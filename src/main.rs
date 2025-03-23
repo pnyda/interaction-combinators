@@ -1,4 +1,5 @@
 #![allow(dead_code)]
+
 use std::collections::HashSet;
 
 use ::ghost_cell::*;
@@ -9,6 +10,14 @@ struct PortRef<'graph, 'brand> {
   index: usize,
   node: &'graph GhostCell<'brand, Agent<'graph, 'brand>>,
 }
+
+impl<'graph, 'brand> PartialEq for PortRef<'graph, 'brand> {
+  fn eq(&self, other: &Self) -> bool {
+    self.node as *const _ == other.node as *const _ && self.index == other.index
+  }
+}
+
+impl<'graph, 'brand> Eq for PortRef<'graph, 'brand> {}
 
 impl<'graph, 'brand> PortRef<'graph, 'brand> {
   fn new(node: &'graph GhostCell<'brand, Agent<'graph, 'brand>>, index: usize) -> Self {
@@ -63,7 +72,7 @@ impl<'graph, 'brand> Agent<'graph, 'brand> {
 }
 
 fn reduce_local<'graph, 'brand>(
-  allocator: &'graph mut Bump,
+  allocator: &'graph Bump,
   permission: &mut GhostToken<'brand>,
   lhs: &'graph GhostCell<'brand, Agent<'graph, 'brand>>,
   rhs: &'graph GhostCell<'brand, Agent<'graph, 'brand>>,
@@ -100,7 +109,10 @@ fn reduce_local<'graph, 'brand>(
     rhs.borrow(permission).agent_type,
   ) {
     (AgentType::Constructor, AgentType::Constructor) => {
-      annihilate(permission, lhs, rhs);
+      // annihilate(permission, lhs, rhs);
+      // ^Interaction Combinator
+      swap(permission, lhs, rhs);
+      // ^Symmetric Interaction Combinator
     }
     (AgentType::Duplicator, AgentType::Duplicator) => {
       swap(permission, lhs, rhs);
@@ -126,28 +138,66 @@ fn list_nodes<'graph, 'brand>(
   let root = known_nodes
     .last()
     .expect("list_nodes expects Vec with len > 0");
-  let nodes_to_visit: Vec<&'graph GhostCell<'brand, Agent<'graph, 'brand>>> = root
+
+  let ports: Vec<Option<PortRef<'graph, 'brand>>> = root
     .borrow(permission)
     .connected_to
     .iter()
-    .filter_map(|port| *port)
-    .map(|port| port.node)
-    .filter(|node| {
-      known_nodes
-        .iter()
-        .find(|x| node as *const _ == *x as *const _)
-        .is_none()
-    })
+    .copied()
     .collect();
 
-  for node in nodes_to_visit {
-    known_nodes.push(node);
-    list_nodes(permission, known_nodes);
+  for port in ports {
+    if let Some(destination) = port {
+      if known_nodes
+        .iter()
+        .all(|known_node| destination.node as *const _ != *known_node as *const _)
+      {
+        known_nodes.push(destination.node);
+        list_nodes(permission, known_nodes);
+      }
+    }
+  }
+}
+
+fn list_edges<'graph, 'brand>(
+  permission: &mut GhostToken<'brand>,
+  known_nodes: &Vec<&'graph GhostCell<'brand, Agent<'graph, 'brand>>>,
+) {
+  let mut already_printed: Vec<PortRef<'graph, 'brand>> = Vec::new();
+
+  for (node_index, node) in known_nodes.iter().enumerate() {
+    for (origin_port, dest_port) in node.borrow(permission).connected_to.iter().enumerate() {
+      if let Some(dest_port) = dest_port {
+        if already_printed.contains(dest_port) {
+          continue;
+        }
+
+        if already_printed.contains(&PortRef::new(node, origin_port)) {
+          continue;
+        }
+
+        println!(
+          "type {:?} node {} port {} <-> type {:?} node {} port {}",
+          node.borrow(permission).agent_type,
+          node_index,
+          origin_port,
+          dest_port.node.borrow(permission).agent_type,
+          known_nodes
+            .iter()
+            .position(|haystack| *haystack as *const _ == dest_port.node as *const _)
+            .unwrap(),
+          dest_port.index
+        );
+
+        already_printed.push(PortRef::new(node, origin_port));
+        already_printed.push(*dest_port);
+      }
+    }
   }
 }
 
 fn reduce_global<'graph, 'brand>(
-  allocator: &mut Bump,
+  allocator: &'graph Bump,
   permission: &mut GhostToken<'brand>,
   root: &'graph GhostCell<'brand, Agent<'graph, 'brand>>,
 ) {
@@ -171,7 +221,7 @@ fn reduce_global<'graph, 'brand>(
   }
 }
 
-fn annihilate<'graph, 'brand>(
+fn swap<'graph, 'brand>(
   permission: &mut GhostToken<'brand>,
   lhs: &'graph GhostCell<'brand, Agent<'graph, 'brand>>,
   rhs: &'graph GhostCell<'brand, Agent<'graph, 'brand>>,
@@ -184,7 +234,7 @@ fn annihilate<'graph, 'brand>(
   PortRef::connect(permission, port_b, port_d);
 }
 
-fn swap<'graph, 'brand>(
+fn annihilate<'graph, 'brand>(
   permission: &mut GhostToken<'brand>,
   lhs: &'graph GhostCell<'brand, Agent<'graph, 'brand>>,
   rhs: &'graph GhostCell<'brand, Agent<'graph, 'brand>>,
@@ -198,7 +248,7 @@ fn swap<'graph, 'brand>(
 }
 
 fn duplicate<'graph, 'brand>(
-  allocator: &'graph mut Bump,
+  allocator: &'graph Bump,
   permission: &mut GhostToken<'brand>,
   top_right: &'graph GhostCell<'brand, Agent<'graph, 'brand>>,
   bottom_left: &'graph GhostCell<'brand, Agent<'graph, 'brand>>,
@@ -240,7 +290,7 @@ fn duplicate<'graph, 'brand>(
 }
 
 fn erase<'graph, 'brand>(
-  allocator: &'graph mut Bump,
+  allocator: &'graph Bump,
   permission: &mut GhostToken<'brand>,
   eraser: &'graph GhostCell<'brand, Agent<'graph, 'brand>>,
   to_be_erased: &'graph GhostCell<'brand, Agent<'graph, 'brand>>,
@@ -319,5 +369,139 @@ mod tests {
       );
       assert_eq!(body.borrow(&token).connected_to[2].unwrap().index, 1);
     });
+  }
+
+  #[test]
+  fn succ() {
+    GhostToken::new(|mut permission| {
+      let lambda_n = GhostCell::new(Agent::constructor());
+      let lambda_f = GhostCell::new(Agent::constructor());
+      let lambda_x = GhostCell::new(Agent::constructor());
+      let apply_nf = GhostCell::new(Agent::constructor());
+      let apply_nfx = GhostCell::new(Agent::constructor());
+      let apply_fnfx = GhostCell::new(Agent::constructor());
+      let copy_f = GhostCell::new(Agent::duplicator());
+
+      PortRef::connect(
+        &mut permission,
+        Some(PortRef::new(&lambda_f, 0)),
+        Some(PortRef::new(&lambda_n, 2)),
+      );
+
+      PortRef::connect(
+        &mut permission,
+        Some(PortRef::new(&lambda_x, 0)),
+        Some(PortRef::new(&lambda_f, 2)),
+      );
+
+      PortRef::connect(
+        &mut permission,
+        Some(PortRef::new(&copy_f, 0)),
+        Some(PortRef::new(&lambda_f, 1)),
+      );
+
+      PortRef::connect(
+        &mut permission,
+        Some(PortRef::new(&apply_nf, 0)),
+        Some(PortRef::new(&lambda_n, 1)),
+      );
+
+      PortRef::connect(
+        &mut permission,
+        Some(PortRef::new(&apply_nfx, 0)),
+        Some(PortRef::new(&apply_nf, 2)),
+      );
+
+      PortRef::connect(
+        &mut permission,
+        Some(PortRef::new(&apply_fnfx, 0)),
+        Some(PortRef::new(&copy_f, 2)),
+      );
+
+      PortRef::connect(
+        &mut permission,
+        Some(PortRef::new(&apply_nf, 1)),
+        Some(PortRef::new(&copy_f, 1)),
+      );
+
+      PortRef::connect(
+        &mut permission,
+        Some(PortRef::new(&apply_nfx, 1)),
+        Some(PortRef::new(&lambda_x, 1)),
+      );
+
+      PortRef::connect(
+        &mut permission,
+        Some(PortRef::new(&apply_nfx, 2)),
+        Some(PortRef::new(&apply_fnfx, 1)),
+      );
+
+      PortRef::connect(
+        &mut permission,
+        Some(PortRef::new(&apply_fnfx, 2)),
+        Some(PortRef::new(&lambda_x, 2)),
+      );
+
+      let eraser = GhostCell::new(Agent::eraser());
+      let zero = GhostCell::new(Agent::constructor());
+      let body = GhostCell::new(Agent::constructor());
+
+      PortRef::connect(
+        &mut permission,
+        Some(PortRef::new(&zero, 1)),
+        Some(PortRef::new(&eraser, 0)),
+      );
+      PortRef::connect(
+        &mut permission,
+        Some(PortRef::new(&zero, 2)),
+        Some(PortRef::new(&body, 0)),
+      );
+      PortRef::connect(
+        &mut permission,
+        Some(PortRef::new(&body, 1)),
+        Some(PortRef::new(&body, 2)),
+      );
+
+      // succ zero
+      let apply_succ_zero = GhostCell::new(Agent::constructor());
+      PortRef::connect(
+        &mut permission,
+        Some(PortRef::new(&apply_succ_zero, 0)),
+        Some(PortRef::new(&lambda_n, 0)),
+      );
+      PortRef::connect(
+        &mut permission,
+        Some(PortRef::new(&apply_succ_zero, 1)),
+        Some(PortRef::new(&zero, 0)),
+      );
+
+      let allocator = Bump::new();
+      // reduce_global(&allocator, &mut permission, &lambda_f);
+
+      let mut known_nodes = vec![&lambda_f];
+      list_nodes(&mut permission, &mut known_nodes);
+      list_edges(&mut permission, &known_nodes);
+
+      println!("Reducing...");
+      reduce_global(&allocator, &mut permission, &lambda_f);
+
+      let mut known_nodes = vec![&lambda_f];
+      list_nodes(&mut permission, &mut known_nodes);
+      list_edges(&mut permission, &known_nodes);
+
+      println!("Reducing...");
+      reduce_global(&allocator, &mut permission, &lambda_f);
+
+      let mut known_nodes = vec![&lambda_f];
+      list_nodes(&mut permission, &mut known_nodes);
+      list_edges(&mut permission, &known_nodes);
+
+      println!("Reducing...");
+      reduce_global(&allocator, &mut permission, &lambda_f);
+
+      let mut known_nodes = vec![&lambda_f];
+      list_nodes(&mut permission, &mut known_nodes);
+      list_edges(&mut permission, &known_nodes);
+    })
   }
 }
